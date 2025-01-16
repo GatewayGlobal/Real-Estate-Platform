@@ -1,5 +1,14 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
+import { supabase } from "@/lib/supabase";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { LeaseForm } from "./LeaseForm";
 import { Input } from "@/components/ui/input";
 import { Search, Plus, Calendar, Building2, MoreVertical } from "lucide-react";
 import {
@@ -21,80 +30,115 @@ import {
 
 interface Lease {
   id: string;
+  unit_id: string;
+  tenant_id: string;
+  start_date: string;
+  end_date: string;
+  monthly_rent: number;
+  status: string;
   tenant: {
     name: string;
     email: string;
-    avatarUrl?: string;
+    avatar_url?: string;
   };
-  property: string;
-  unit: string;
-  startDate: string;
-  endDate: string;
-  monthlyRent: number;
-  status: "active" | "expired" | "pending";
+  unit: {
+    unit_number: string;
+    property: {
+      title: string;
+    };
+  };
 }
 
-interface LeaseListProps {
-  leases?: Lease[];
-}
+const LeaseList = () => {
+  const [leases, setLeases] = useState<Lease[]>([]);
+  const [loading, setLoading] = useState(true);
 
-const defaultLeases: Lease[] = [
-  {
-    id: "1",
-    tenant: {
-      name: "Sarah Johnson",
-      email: "sarah.j@example.com",
-      avatarUrl: "https://api.dicebear.com/7.x/avataaars/svg?seed=Sarah",
-    },
-    property: "Sunset Apartments",
-    unit: "Apt 101",
-    startDate: "2024-01-01",
-    endDate: "2024-12-31",
-    monthlyRent: 1500,
-    status: "active",
-  },
-  {
-    id: "2",
-    tenant: {
-      name: "Michael Chen",
-      email: "m.chen@example.com",
-      avatarUrl: "https://api.dicebear.com/7.x/avataaars/svg?seed=Michael",
-    },
-    property: "Ocean View Complex",
-    unit: "Apt 205",
-    startDate: "2023-06-01",
-    endDate: "2024-05-31",
-    monthlyRent: 2000,
-    status: "pending",
-  },
-  {
-    id: "3",
-    tenant: {
-      name: "Emma Wilson",
-      email: "emma.w@example.com",
-      avatarUrl: "https://api.dicebear.com/7.x/avataaars/svg?seed=Emma",
-    },
-    property: "Mountain Lodge",
-    unit: "Apt 308",
-    startDate: "2023-01-01",
-    endDate: "2023-12-31",
-    monthlyRent: 1800,
-    status: "expired",
-  },
-];
+  useEffect(() => {
+    async function fetchLeases() {
+      try {
+        const { data: leasesData, error } = await supabase
+          .from("leases")
+          .select(`
+            *,
+            tenant:tenants(name, email, avatar_url),
+            unit:units(
+              unit_number,
+              property:properties(title)
+            )
+          `)
+          .order("created_at", { ascending: false });
 
-const LeaseList = ({ leases = defaultLeases }: LeaseListProps) => {
+        if (error) throw error;
+        if (leasesData) setLeases(leasesData);
+      } catch (error) {
+        console.error("Error fetching leases:", error);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    fetchLeases();
+
+    // Subscribe to realtime changes
+    const channel = supabase
+      .channel("leases_changes")
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "leases",
+        },
+        () => {
+          fetchLeases();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  if (loading) {
+    return <div className="p-6">Loading...</div>;
+  }
+
   return (
     <div className="p-6 space-y-6 bg-background">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div className="relative flex-1 w-full sm:max-w-md">
           <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground h-4 w-4" />
-          <Input placeholder="Search leases..." className="pl-9" />
+          <Input 
+            placeholder="Search leases..." 
+            className="pl-9" 
+          />
         </div>
-        <Button>
-          <Plus className="h-4 w-4 mr-2" />
-          New Lease
-        </Button>
+        <Dialog>
+          <DialogTrigger asChild>
+            <Button>
+              <Plus className="h-4 w-4 mr-2" />
+              New Lease
+            </Button>
+          </DialogTrigger>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Create New Lease</DialogTitle>
+            </DialogHeader>
+            <LeaseForm
+              onSubmit={async (data) => {
+                try {
+                  const { error } = await supabase.from("leases").insert([data]);
+                  if (error) throw error;
+                  // Refresh the leases list
+                  window.location.reload();
+                } catch (error) {
+                  console.error("Error adding lease:", error);
+                }
+              }}
+            />
+          </DialogContent>
+        </Dialog>
       </div>
 
       <div className="border rounded-lg">
@@ -115,7 +159,9 @@ const LeaseList = ({ leases = defaultLeases }: LeaseListProps) => {
                 <TableCell>
                   <div className="flex items-center gap-3">
                     <Avatar>
-                      <AvatarImage src={lease.tenant.avatarUrl} />
+                      <AvatarImage 
+                        src={lease.tenant.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${lease.tenant.name}`} 
+                      />
                       <AvatarFallback>{lease.tenant.name[0]}</AvatarFallback>
                     </Avatar>
                     <div>
@@ -130,10 +176,10 @@ const LeaseList = ({ leases = defaultLeases }: LeaseListProps) => {
                   <div className="space-y-1">
                     <div className="flex items-center gap-2">
                       <Building2 className="h-4 w-4 text-muted-foreground" />
-                      <span className="text-sm">{lease.property}</span>
+                      <span className="text-sm">{lease.unit.property.title}</span>
                     </div>
                     <p className="text-sm text-muted-foreground">
-                      {lease.unit}
+                      {lease.unit.unit_number}
                     </p>
                   </div>
                 </TableCell>
@@ -142,14 +188,14 @@ const LeaseList = ({ leases = defaultLeases }: LeaseListProps) => {
                     <div className="flex items-center gap-2">
                       <Calendar className="h-4 w-4 text-muted-foreground" />
                       <span className="text-sm">
-                        {lease.startDate} - {lease.endDate}
+                        {new Date(lease.start_date).toLocaleDateString()} - {new Date(lease.end_date).toLocaleDateString()}
                       </span>
                     </div>
                   </div>
                 </TableCell>
                 <TableCell>
                   <span className="font-medium">
-                    ${lease.monthlyRent.toLocaleString()}
+                    ${lease.monthly_rent.toLocaleString()}
                   </span>
                 </TableCell>
                 <TableCell>

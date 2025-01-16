@@ -1,5 +1,14 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
+import { supabase } from "@/lib/supabase";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { MaintenanceForm } from "./MaintenanceForm";
 import { Input } from "@/components/ui/input";
 import { Search, Plus, Clock, Building2, MoreVertical } from "lucide-react";
 import {
@@ -28,54 +37,79 @@ import {
 interface MaintenanceRequest {
   id: string;
   title: string;
-  property: string;
-  unit: string;
-  priority: "high" | "medium" | "low";
-  status: "open" | "in_progress" | "completed";
-  dateSubmitted: string;
   description: string;
+  priority: string;
+  status: string;
+  created_at: string;
+  unit: {
+    unit_number: string;
+    property: {
+      title: string;
+    };
+  };
 }
 
-interface MaintenanceListProps {
-  requests?: MaintenanceRequest[];
-}
+const MaintenanceList = () => {
+  const [requests, setRequests] = useState<MaintenanceRequest[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [statusFilter, setStatusFilter] = useState<string>("all");
 
-const defaultRequests: MaintenanceRequest[] = [
-  {
-    id: "1",
-    title: "Leaking Faucet",
-    property: "Sunset Apartments",
-    unit: "Apt 101",
-    priority: "medium",
-    status: "open",
-    dateSubmitted: "2024-03-15",
-    description: "Kitchen sink faucet is leaking continuously",
-  },
-  {
-    id: "2",
-    title: "AC Not Working",
-    property: "Ocean View Complex",
-    unit: "Apt 205",
-    priority: "high",
-    status: "in_progress",
-    dateSubmitted: "2024-03-14",
-    description: "Air conditioning unit not cooling properly",
-  },
-  {
-    id: "3",
-    title: "Light Fixture Replacement",
-    property: "Mountain Lodge",
-    unit: "Apt 308",
-    priority: "low",
-    status: "completed",
-    dateSubmitted: "2024-03-13",
-    description: "Living room light fixture needs replacement",
-  },
-];
+  useEffect(() => {
+    async function fetchRequests() {
+      try {
+        const query = supabase
+          .from("maintenance_requests")
+          .select(`
+            *,
+            unit:units(
+              unit_number,
+              property:properties(title)
+            )
+          `)
+          .order("created_at", { ascending: false });
 
-const MaintenanceList = ({
-  requests = defaultRequests,
-}: MaintenanceListProps) => {
+        if (statusFilter !== "all") {
+          query.eq("status", statusFilter);
+        }
+
+        const { data: requestsData, error } = await query;
+
+        if (error) throw error;
+        if (requestsData) setRequests(requestsData);
+      } catch (error) {
+        console.error("Error fetching maintenance requests:", error);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    fetchRequests();
+
+    // Subscribe to realtime changes
+    const channel = supabase
+      .channel("maintenance_changes")
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "maintenance_requests",
+        },
+        () => {
+          fetchRequests();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [statusFilter]);
+
+  if (loading) {
+    return <div className="p-6">Loading...</div>;
+  }
+
   return (
     <div className="p-6 space-y-6 bg-background">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
@@ -84,7 +118,10 @@ const MaintenanceList = ({
           <Input placeholder="Search requests..." className="pl-9" />
         </div>
         <div className="flex items-center gap-3 w-full sm:w-auto">
-          <Select defaultValue="all">
+          <Select
+            value={statusFilter}
+            onValueChange={(value) => setStatusFilter(value)}
+          >
             <SelectTrigger className="w-[150px]">
               <SelectValue placeholder="Filter by status" />
             </SelectTrigger>
@@ -95,10 +132,39 @@ const MaintenanceList = ({
               <SelectItem value="completed">Completed</SelectItem>
             </SelectContent>
           </Select>
-          <Button>
-            <Plus className="h-4 w-4 mr-2" />
-            New Request
-          </Button>
+          <Dialog>
+            <DialogTrigger asChild>
+              <Button>
+                <Plus className="h-4 w-4 mr-2" />
+                New Request
+              </Button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Create Maintenance Request</DialogTitle>
+              </DialogHeader>
+              <MaintenanceForm
+                onSubmit={async (data) => {
+                  try {
+                    const { error } = await supabase
+                      .from("maintenance_requests")
+                      .insert([
+                        {
+                          ...data,
+                          submitted_by: (await supabase.auth.getUser()).data.user
+                            ?.id,
+                        },
+                      ]);
+                    if (error) throw error;
+                    // Refresh the requests list
+                    window.location.reload();
+                  } catch (error) {
+                    console.error("Error adding maintenance request:", error);
+                  }
+                }}
+              />
+            </DialogContent>
+          </Dialog>
         </div>
       </div>
 
@@ -129,10 +195,10 @@ const MaintenanceList = ({
                   <div className="space-y-1">
                     <div className="flex items-center gap-2">
                       <Building2 className="h-4 w-4 text-muted-foreground" />
-                      <span className="text-sm">{request.property}</span>
+                      <span className="text-sm">{request.unit.property.title}</span>
                     </div>
                     <p className="text-sm text-muted-foreground">
-                      {request.unit}
+                      {request.unit.unit_number}
                     </p>
                   </div>
                 </TableCell>
@@ -162,7 +228,7 @@ const MaintenanceList = ({
                     {request.status
                       .split("_")
                       .map(
-                        (word) => word.charAt(0).toUpperCase() + word.slice(1),
+                        (word) => word.charAt(0).toUpperCase() + word.slice(1)
                       )
                       .join(" ")}
                   </Badge>
@@ -170,7 +236,9 @@ const MaintenanceList = ({
                 <TableCell>
                   <div className="flex items-center gap-2">
                     <Clock className="h-4 w-4 text-muted-foreground" />
-                    <span className="text-sm">{request.dateSubmitted}</span>
+                    <span className="text-sm">
+                      {new Date(request.created_at).toLocaleDateString()}
+                    </span>
                   </div>
                 </TableCell>
                 <TableCell>

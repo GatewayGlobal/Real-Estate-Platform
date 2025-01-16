@@ -1,5 +1,14 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
+import { supabase } from "@/lib/supabase";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { TenantForm } from "./TenantForm";
 import { Input } from "@/components/ui/input";
 import { Search, Plus, Mail, Phone, MoreVertical } from "lucide-react";
 import {
@@ -24,57 +33,112 @@ interface Tenant {
   name: string;
   email: string;
   phone: string;
-  unit: string;
-  status: "active" | "late" | "pending";
-  avatarUrl?: string;
+  status: string;
+  avatar_url?: string;
 }
 
-interface TenantListProps {
-  tenants?: Tenant[];
-}
+const TenantList = () => {
+  interface TenantWithUnit extends Tenant {
+    unit?: string;
+    lease?: {
+      unit: {
+        unit_number: string;
+      };
+    };
+  }
 
-const defaultTenants: Tenant[] = [
-  {
-    id: "1",
-    name: "Sarah Johnson",
-    email: "sarah.j@example.com",
-    phone: "(555) 123-4567",
-    unit: "Apt 101",
-    status: "active",
-    avatarUrl: "https://api.dicebear.com/7.x/avataaars/svg?seed=Sarah",
-  },
-  {
-    id: "2",
-    name: "Michael Chen",
-    email: "m.chen@example.com",
-    phone: "(555) 234-5678",
-    unit: "Apt 205",
-    status: "late",
-    avatarUrl: "https://api.dicebear.com/7.x/avataaars/svg?seed=Michael",
-  },
-  {
-    id: "3",
-    name: "Emma Wilson",
-    email: "emma.w@example.com",
-    phone: "(555) 345-6789",
-    unit: "Apt 308",
-    status: "pending",
-    avatarUrl: "https://api.dicebear.com/7.x/avataaars/svg?seed=Emma",
-  },
-];
+  const [tenants, setTenants] = useState<TenantWithUnit[]>([]);
+  const [loading, setLoading] = useState(true);
 
-const TenantList = ({ tenants = defaultTenants }: TenantListProps) => {
+  useEffect(() => {
+    async function fetchTenants() {
+      try {
+        const { data: tenantsData, error } = await supabase
+          .from("tenants")
+          .select(`
+            *,
+            lease:leases(
+              unit:units(unit_number)
+            )
+          `)
+          .order("created_at", { ascending: false });
+
+        if (error) throw error;
+        if (tenantsData) setTenants(tenantsData);
+      } catch (error) {
+        console.error("Error fetching tenants:", error);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    fetchTenants();
+
+    // Subscribe to realtime changes
+    const channel = supabase
+      .channel("tenants_changes")
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "tenants",
+        },
+        () => {
+          fetchTenants();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  if (loading) {
+    return <div className="p-6">Loading...</div>;
+  }
+
   return (
     <div className="p-6 space-y-6 bg-background">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div className="relative flex-1 w-full sm:max-w-md">
           <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground h-4 w-4" />
-          <Input placeholder="Search tenants..." className="pl-9" />
+          <Input 
+            placeholder="Search tenants..." 
+            className="pl-9" 
+          />
         </div>
-        <Button>
-          <Plus className="h-4 w-4 mr-2" />
-          Add Tenant
-        </Button>
+        <Dialog>
+          <DialogTrigger asChild>
+            <Button>
+              <Plus className="h-4 w-4 mr-2" />
+              Add Tenant
+            </Button>
+          </DialogTrigger>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Add New Tenant</DialogTitle>
+            </DialogHeader>
+            <TenantForm
+              onSubmit={async (data) => {
+                try {
+                  const { error } = await supabase.from("tenants").insert([
+                    {
+                      ...data,
+                      owner_id: (await supabase.auth.getUser()).data.user?.id,
+                    },
+                  ]);
+                  if (error) throw error;
+                  // Refresh the tenants list
+                  window.location.reload();
+                } catch (error) {
+                  console.error("Error adding tenant:", error);
+                }
+              }}
+            />
+          </DialogContent>
+        </Dialog>
       </div>
 
       <div className="border rounded-lg">
@@ -94,7 +158,9 @@ const TenantList = ({ tenants = defaultTenants }: TenantListProps) => {
                 <TableCell>
                   <div className="flex items-center gap-3">
                     <Avatar>
-                      <AvatarImage src={tenant.avatarUrl} />
+                      <AvatarImage 
+                        src={tenant.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${tenant.name}`} 
+                      />
                       <AvatarFallback>{tenant.name[0]}</AvatarFallback>
                     </Avatar>
                     <div>
@@ -117,7 +183,9 @@ const TenantList = ({ tenants = defaultTenants }: TenantListProps) => {
                     </div>
                   </div>
                 </TableCell>
-                <TableCell>{tenant.unit}</TableCell>
+                <TableCell>
+                  {tenant.lease?.unit?.unit_number || "No unit assigned"}
+                </TableCell>
                 <TableCell>
                   <Badge
                     variant={
